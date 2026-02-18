@@ -33,3 +33,5 @@ The system is configured for the **Nucleo-F446RE**.
 3.  Open `SoundLoc.ioc` if you need to modify the pinout.
 4.  **Build** and **Flash** to a Nucleo-F446RE.
 5.  Open a Serial Monitor at **115200 baud** to see the angle output.
+<img width="834" height="728" alt="Screenshot 2026-02-17 222334" src="https://github.com/user-attachments/assets/ea2fbecb-7873-402c-9b4d-8c4d5d5b60ee" />
+
