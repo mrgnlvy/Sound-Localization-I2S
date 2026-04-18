@@ -127,57 +127,65 @@ int main(void)
   {
     HAL_Delay(50);
 
-	// --- Step 1: Data Separation ---
-	// We take the raw interleaved DMA data and split it into arrays.
-	// I2S2 Buffer: [Mic1, Mic2, Mic1, Mic2...]
-	// I2S3 Buffer: [Mic3,  x,   Mic3,  x  ...]
-	uint64_t total_energy = 0;
+    // --- Step 1: Data Separation ---
+    uint64_t total_energy = 0;
 
-	for(int i=0; i < BUFFER_SIZE/2; i++) {
-	  // Note: << 8 or similar shifting might be needed depending on mic sensitivity
-	  // For INMP441, raw 24-bit values (in upper 24 bits of 32-bit word) are fine for correlation.
-	  mic1[i] = (int32_t)i2s2_buff[i*2];
-	  mic2[i] = (int32_t)i2s2_buff[i*2+1];
-	  mic3[i] = (int32_t)i2s3_buff[i*2];
-	  total_energy += (uint64_t)abs(mic1[i]);
-	}
+    for(int i=0; i < BUFFER_SIZE/2; i++) {
+      mic1[i] = (int32_t)i2s2_buff[i*2];
+      mic2[i] = (int32_t)i2s2_buff[i*2+1];
+      mic3[i] = (int32_t)i2s3_buff[i*2];
+      total_energy += (uint64_t)abs(mic1[i]);
+    }
 
-	// --- Step 2: Noise Gate ---
-	if(total_energy > THRESHOLD) {
+    // --- Step 2: Noise Gate ---
+    if(total_energy > THRESHOLD) {
 
-	// --- Step 3: TDOA Calculation ---
-	// How many samples is Mic 2 delayed compared to Mic 1?
-	int lag12 = calc_lag(mic1, mic2, BUFFER_SIZE/2);
+      // --- Step 3: TDOA Calculation ---
+      // Lag between Mic 1 and Mic 2 (measures "X" direction)
+      int lag_x = calc_lag(mic1, mic2, BUFFER_SIZE/2);
+      // Lag between Mic 1 and Mic 3 (measures "Y" direction)
+      int lag_y = calc_lag(mic1, mic3, BUFFER_SIZE/2);
 
-	// Convert lag to seconds: time = samples / sample_rate
-	float time_delay = (float)lag12 / SAMPLE_RATE;
+      // Convert to distances
+      float dist_x = ((float)lag_x / SAMPLE_RATE) * SPEED_SOUND;
+      float dist_y = ((float)lag_y / SAMPLE_RATE) * SPEED_SOUND;
 
-	// --- Step 4: Angle Estimation ---
-	// distance_diff = time * speed_of_sound
-	float dist_diff = time_delay * SPEED_SOUND;
+      // --- Step 4: 360 Degree Angle Estimation ---
+      // atan2f takes (y, x) and returns the angle in radians from -PI to PI
+      float angle_360_rad = atan2f(dist_y, dist_x);
 
-	// Clamp to physical limits (-10cm to +10cm)
-	if (dist_diff > MIC_DIST) dist_diff = MIC_DIST;
-	if (dist_diff < -MIC_DIST) dist_diff = -MIC_DIST;
+      // Convert to 0-360 degrees
+      float angle_360_deg = angle_360_rad * (180.0f / 3.14159f);
+      if (angle_360_deg < 0) angle_360_deg += 360.0f;
 
-	// Angle calculation: theta = arccos(dist_diff / mic_spacing)
-	// 90 deg = Center, 0 deg = Right, 180 deg = Left
-	float angle_rad = acosf(dist_diff / MIC_DIST);
-	float angle_deg = angle_rad * (180.0f / 3.14159f);
+       // --- Step 5: Distance Estimation (Triangulation) ---
+       float source_distance = -1.0f; // -1 denotes invalid or too far to measure
 
-	// Optional: Use lag13 (Mic 1 vs Mic 3) to determine Front/Back if using 2D array
-	// int lag13 = calc_lag(mic1, mic3, BUFFER_SIZE/2);
+       // Calculate the denominator: 2 * (d12 + d13)
+       float denominator = 2.0f * (dist_diff12 + dist_diff13);
 
-	// --- Output ---
-	// Use the SWV ITM Data Console or a UART printf here
-	// printf("Lag: %d | Angle: %.1f\n", lag12, angle_deg);
+       // Guard against divide-by-zero.
+       // A denominator of 0 means the sound is infinitely far away (plane waves)
+       if (fabsf(denominator) > 0.0001f) {
+         float dist_sq = MIC_DIST * MIC_DIST;
+         float numerator = 2.0f * dist_sq - (dist_diff12 * dist_diff12 + dist_diff13 * dist_diff13);
+
+         source_distance = numerator / denominator;
+
+         // If distance is negative, the sound source is mathematically invalid
+         // under this model (usually caused by noise or spatial aliasing).
+         if (source_distance < 0.0f) {
+           source_distance = -1.0f;
+          }
+        }
+
+        // --- Output ---
+        // Use the SWV ITM Data Console or a UART printf here
+        // printf("Angle: %.1f deg | Distance: %.2f m\n", angle_deg, source_distance);
 
     /* USER CODE END WHILE */
-	}
+    }
   }
-  /* USER CODE BEGIN 3 */
-  /* USER CODE END 3 */
-}
 
 /**
   * @brief System Clock Configuration
