@@ -123,69 +123,97 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    HAL_Delay(50);
+  /* Infinite loop */
+/* USER CODE BEGIN WHILE */
+while (1)
+{
+  HAL_Delay(50);
 
-    // --- Step 1: Data Separation ---
-    uint64_t total_energy = 0;
+  // --- Step 1: Data Separation ---
+  uint64_t total_energy = 0;
 
-    for(int i=0; i < BUFFER_SIZE/2; i++) {
-      mic1[i] = (int32_t)i2s2_buff[i*2];
-      mic2[i] = (int32_t)i2s2_buff[i*2+1];
-      mic3[i] = (int32_t)i2s3_buff[i*2];
-      total_energy += (uint64_t)abs(mic1[i]);
-    }
-
-    // --- Step 2: Noise Gate ---
-    if(total_energy > THRESHOLD) {
-
-      // --- Step 3: TDOA Calculation ---
-      // Lag between Mic 1 and Mic 2 (measures "X" direction)
-      int lag_x = calc_lag(mic1, mic2, BUFFER_SIZE/2);
-      // Lag between Mic 1 and Mic 3 (measures "Y" direction)
-      int lag_y = calc_lag(mic1, mic3, BUFFER_SIZE/2);
-
-      // Convert to distances
-      float dist_x = ((float)lag_x / SAMPLE_RATE) * SPEED_SOUND;
-      float dist_y = ((float)lag_y / SAMPLE_RATE) * SPEED_SOUND;
-
-      // --- Step 4: 360 Degree Angle Estimation ---
-      // atan2f takes (y, x) and returns the angle in radians from -PI to PI
-      float angle_360_rad = atan2f(dist_y, dist_x);
-
-      // Convert to 0-360 degrees
-      float angle_360_deg = angle_360_rad * (180.0f / 3.14159f);
-      if (angle_360_deg < 0) angle_360_deg += 360.0f;
-
-       // --- Step 5: Distance Estimation (Triangulation) ---
-       float source_distance = -1.0f; // -1 denotes invalid or too far to measure
-
-       // Calculate the denominator: 2 * (d12 + d13)
-       float denominator = 2.0f * (dist_diff12 + dist_diff13);
-
-       // Guard against divide-by-zero.
-       // A denominator of 0 means the sound is infinitely far away (plane waves)
-       if (fabsf(denominator) > 0.0001f) {
-         float dist_sq = MIC_DIST * MIC_DIST;
-         float numerator = 2.0f * dist_sq - (dist_diff12 * dist_diff12 + dist_diff13 * dist_diff13);
-
-         source_distance = numerator / denominator;
-
-         // If distance is negative, the sound source is mathematically invalid
-         // under this model (usually caused by noise or spatial aliasing).
-         if (source_distance < 0.0f) {
-           source_distance = -1.0f;
-          }
-        }
-
-        // --- Output ---
-        // Use the SWV ITM Data Console or a UART printf here
-        // printf("Angle: %.1f deg | Distance: %.2f m\n", angle_deg, source_distance);
-
-    /* USER CODE END WHILE */
-    }
+  for(int i=0; i < BUFFER_SIZE/2; i++) {
+    mic1[i] = (int32_t)i2s2_buff[i*2];
+    mic2[i] = (int32_t)i2s2_buff[i*2+1];
+    mic3[i] = (int32_t)i2s3_buff[i*2];
+    total_energy += (uint64_t)abs(mic1[i]);
   }
+
+  // --- Step 2: Noise Gate ---
+  if(total_energy > THRESHOLD) {
+
+    // --- Step 3: TDOA Calculation ---
+    int lag12 = calc_lag(mic1, mic2, BUFFER_SIZE/2);
+    int lag13 = calc_lag(mic1, mic3, BUFFER_SIZE/2);
+
+    float time_delay12 = (float)lag12 / SAMPLE_RATE;
+    float time_delay13 = (float)lag13 / SAMPLE_RATE;
+
+    float d12 = time_delay12 * SPEED_SOUND;
+    float d13 = time_delay13 * SPEED_SOUND;
+
+    // --- Step 4: Analytical Hyperbolic Intersection ---
+    float D = MIC_DIST;
+    float sqrt3 = 1.73205f;
+    float y1 = D / sqrt3; // Mic 1 Y-coordinate
+
+    // Calculate the linear coefficients for X = alpha*r1 + beta
+    float alpha = (d12 - d13) / D;
+    float beta  = (d13*d13 - d12*d12) / (2.0f * D);
+
+    // Calculate the linear coefficients for Y = gamma*r1 + delta
+    float gamma = (d12 + d13) / (sqrt3 * D);
+    float delta = -(d13*d13 + d12*d12) / (2.0f * sqrt3 * D);
+
+    // Formulate the quadratic equation parameters (A*r1^2 + B*r1 + C = 0)
+    float A = (alpha * alpha) + (gamma * gamma) - 1.0f;
+    float B = 2.0f * (alpha * beta + gamma * (delta - y1));
+    float C = (beta * beta) + (delta - y1)*(delta - y1);
+
+    // Solve the quadratic equation for r1
+    float discriminant = (B * B) - (4.0f * A * C);
+
+    float angle_deg = 0.0f;
+    float source_distance = -1.0f;
+
+    // If discriminant < 0, the delays are physically impossible (usually hardware noise)
+    if (discriminant >= 0.0f) {
+      float r1 = -1.0f;
+
+      // Handle the Far-Field limit (where A approaches 0)
+      if (fabsf(A) < 0.0001f) {
+        if (fabsf(B) > 0.0001f) {
+          r1 = -C / B; // Linear fallback
+        }
+      } else {
+        // Near-Field: Standard quadratic formula. Take the maximum positive root.
+        float root1 = (-B + sqrtf(discriminant)) / (2.0f * A);
+        float root2 = (-B - sqrtf(discriminant)) / (2.0f * A);
+        r1 = (root1 > root2) ? root1 : root2;
+      }
+
+      // --- Step 5: Final Coordinate Mapping ---
+      if (r1 >= 0.0f) {
+        // Plug r1 back into our algebraic reductions
+        float final_X = alpha * r1 + beta;
+        float final_Y = gamma * r1 + delta;
+
+        // Calculate absolute distance from the array center
+        source_distance = sqrtf(final_X * final_X + final_Y * final_Y);
+
+        // Calculate 360-degree angle
+        float angle_rad = atan2f(final_Y, final_X);
+        angle_deg = angle_rad * (180.0f / 3.14159f);
+
+        // Normalize to 0-360 range
+        if (angle_deg < 0.0f) angle_deg += 360.0f;
+      }
+    }
+    // --- Output ---
+    // printf("Angle: %.1f | Distance: %.3f m | X: %.3f, Y: %.3f\n", angle_deg, source_distance, final_X, final_Y);
+  }
+  /* USER CODE END WHILE */
+}
 
 /**
   * @brief System Clock Configuration
